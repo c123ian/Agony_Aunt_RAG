@@ -11,6 +11,8 @@ from modal import Secret  # Import Secret
 from fastlite import Database  # For database operations
 from starlette.middleware.sessions import SessionMiddleware  # For session handling
 import aiohttp  # For asynchronous HTTP requests
+import os
+import sqlite3
 
 # Constants
 MODELS_DIR = "/llama_mini"
@@ -20,6 +22,30 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 USERNAME = "c123ian"
 APP_NAME = "rag-chatbot"
 DATABASE_DIR = "/db_data"  # Database directory
+
+db_path = os.path.join(DATABASE_DIR, 'chat_history_test.db')
+
+# Ensure the directory exists
+os.makedirs(DATABASE_DIR, exist_ok=True)
+
+# Step 1: Create the 'conversations' table if it does not exist
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+conn.commit()
+conn.close()
+
+# Step 2: Initialize FastLite Database connection
+db = Database(db_path)
+conversations = db['conversations']  # Access the existing table
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -257,19 +283,6 @@ def serve_fasthtml():
         ]
     )
 
-    # Set up the database using MiniDataAPI
-    db_path = os.path.join(DATABASE_DIR, 'chat_history.db')
-    db = Database(db_path)
-
-    # Define the Conversation class for the database table
-    class Conversation:
-        id: int
-        session_id: str
-        role: str
-        content: str
-
-    # Create the conversations table
-    conversations = db.create(Conversation)
 
     @rt("/")
     async def get(session):
@@ -553,6 +566,13 @@ def serve_fasthtml():
 if __name__ == "__main__":
     serve_vllm()      # Serve the vLLM server
     serve_fasthtml()  # Serve the FastHTML web interface
+
+
+
+
+
+
+
 
 
 
