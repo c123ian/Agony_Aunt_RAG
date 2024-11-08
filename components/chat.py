@@ -96,3 +96,5 @@ def chat(session_id):
         ws_connect="/ws",
         cls="flex flex-col w-full max-w-2xl border border-zinc-700 h-full rounded-md outline-1 outline outline-zinc-700 outline-offset-2 relative",
     )
+
+

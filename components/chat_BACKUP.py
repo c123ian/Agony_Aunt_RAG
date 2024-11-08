@@ -1,6 +1,9 @@
 from fasthtml.common import *
 from components.assets import send_icon
 
+chat_messages = []
+
+
 def chat_input(disabled=False):
     return Input(
         type="text",
@@ -14,6 +17,7 @@ def chat_input(disabled=False):
         cls="!mb-0 bg-zinc-900 border border-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500 disabled:bg-zinc-800 disabled:border-zinc-700 disabled:cursor-not-allowed rounded-md",
     )
 
+
 def chat_button(disabled=False):
     return Button(
         send_icon(),
@@ -21,6 +25,7 @@ def chat_button(disabled=False):
         disabled=disabled,
         cls="bg-green-500 hover:bg-green-600 text-white rounded-md p-2.5 flex items-center justify-center border border-zinc-700 focus-visible:outline-none focus-visible:ring-zinc-500 disabled:bg-green-800 disabled:border-green-700 disabled:cursor-not-allowed",
     )
+
 
 def chat_form(disabled=False):
     return Form(
@@ -31,14 +36,13 @@ def chat_form(disabled=False):
         cls="w-full flex gap-2 items-center border-t border-zinc-700 p-2",
     )
 
-def chat_message(msg_idx, chat_messages):
+
+def chat_message(msg_idx):
     msg = chat_messages[msg_idx]
-    # Adjusted max-width class to make the chat bubble slightly smaller
-    # Changed 'max-w-lg' to 'max-w-sm' for smaller width
-    content_cls = f"px-2.5 py-1.5 rounded-lg {'rounded-br-none border-green-700 border' if msg['role'] == 'user' else 'rounded-bl-none border-zinc-400 border'} max-w-sm"
+    content_cls = f"px-2.5 py-1.5 rounded-lg max-w-xs {'rounded-br-none border-green-700 border' if msg['role'] == 'user' else 'rounded-bl-none border-zinc-400 border'}"
 
     return Div(
-        Div(msg["role"].capitalize(), cls="text-xs text-zinc-500 mb-1"),
+        Div(msg["role"], cls="text-xs text-zinc-500 mb-1"),
         Div(
             msg["content"],
             cls=f"bg-{'green-600 text-white' if msg['role'] == 'user' else 'zinc-200 text-black'} {content_cls}",
@@ -48,12 +52,14 @@ def chat_message(msg_idx, chat_messages):
         cls=f"self-{'end' if msg['role'] == 'user' else 'start'}",
     )
 
-def chat_window(chat_messages):
+
+def chat_window():
     return Div(
         id="messages",
-        *[chat_message(i, chat_messages) for i in range(len(chat_messages))],
+        *[chat_message(i) for i in range(len(chat_messages))],
         cls="flex flex-col gap-2 p-4 h-[45vh] overflow-y-auto w-full",
     )
+
 
 def chat_title(session_id):
     return Div(
@@ -61,10 +67,11 @@ def chat_title(session_id):
         cls="text-xs font-mono absolute top-0 left-0 w-fit p-1 bg-zinc-900 border-b border-r border-zinc-700 rounded-tl-md rounded-br-md",
     )
 
-def chat(session_id, chat_messages):
+
+def chat(session_id):
     return Div(
         chat_title(session_id),
-        chat_window(chat_messages),
+        chat_window(),
         chat_form(),
         Script(
             """
@@ -89,5 +96,3 @@ def chat(session_id, chat_messages):
         ws_connect="/ws",
         cls="flex flex-col w-full max-w-2xl border border-zinc-700 h-full rounded-md outline-1 outline outline-zinc-700 outline-offset-2 relative",
     )
-
-
