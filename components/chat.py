@@ -1,3 +1,4 @@
+import logging
 from fasthtml.common import *
 from components.assets import send_icon
 
@@ -22,13 +23,26 @@ def chat_button(disabled=False):
         cls="bg-green-500 hover:bg-green-600 text-white rounded-md p-2.5 flex items-center justify-center border border-zinc-700 focus-visible:outline-none focus-visible:ring-zinc-500 disabled:bg-green-800 disabled:border-green-700 disabled:cursor-not-allowed",
     )
 
-def chat_form(disabled=False):
+# Update the chat_form component to include the session ID
+def chat_form(disabled=False, session_id=None):  # Add session_id parameter
+    if not session_id:
+        logging.error("No session_id provided to chat_form!")
+        
     return Form(
-        chat_input(disabled=disabled),
-        chat_button(disabled=disabled),
-        id="form",
-        ws_send=True,
-        cls="w-full flex gap-2 items-center border-t border-zinc-700 p-2",
+        Input(
+            type="text",
+            name="msg",
+            placeholder="Type your message...",
+            disabled=disabled,
+            cls="input input-bordered w-full",
+        ),
+        Input(
+            type="hidden",
+            name="session_id",
+            value=session_id,  # Use actual session_id, not template string
+        ),
+        cls="flex gap-2",
+        hx_ws="send",
     )
 
 def chat_message(msg_idx, messages):
@@ -53,17 +67,19 @@ def chat_window(messages):
         cls="flex flex-col gap-2 p-4 h-[45vh] overflow-y-auto w-full",
     )
 
-def chat_title(session_id):
-    return Div(
-        f"Session ID: {session_id}",
-        cls="text-xs font-mono absolute top-0 left-0 w-fit p-1 bg-zinc-900 border-b border-r border-zinc-700 rounded-tl-md rounded-br-md",
-    )
+#def chat_title(session_id):
+ #   return Div(
+  #      f"Session ID: {session_id}",
+   #     cls="text-xs font-mono absolute top-0 left-0 w-fit p-1 bg-zinc-900 border-b border-r border-zinc-700 rounded-tl-md rounded-br-md",
+    #)
 
 def chat(session_id, messages):
     return Div(
-        chat_title(session_id),
+        # chat_title(session_id),
+        logging.info(f"Rendering chat component with session_id: {session_id}"),
         chat_window(messages),
-        chat_form(),
+        chat_form(disabled=False, session_id=session_id),  # Pass session_id to form
+        # chat_form().replace("{{ session_id }}", session_id),  # Replace placeholder with actual session_id,
         Script(
             """
             function scrollToBottom(smooth) {

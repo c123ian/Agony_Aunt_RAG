@@ -100,9 +100,129 @@ app = modal.App(APP_NAME)
 )
 @modal.asgi_app()
 def serve_vllm():
-    # ... (vLLM server code remains unchanged)
-    pass  # For brevity, assuming this part remains the same as your code
+    import os
+    from vllm.engine.arg_utils import AsyncEngineArgs
+    from vllm.engine.async_llm_engine import AsyncLLMEngine
+    from vllm.sampling_params import SamplingParams
+    from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+    from vllm.entrypoints.logger import RequestLogger
+    import fastapi
+    from fastapi.responses import StreamingResponse, JSONResponse
+    import uuid
+    import asyncio
+    from typing import Optional, AsyncGenerator
 
+    # Function to find the model path by searching for 'config.json'
+    def find_model_path(base_dir):
+        for root, dirs, files in os.walk(base_dir):
+            if "config.json" in files:
+                return root
+        return None
+
+    # Function to find the tokenizer path by searching for 'tokenizer_config.json'
+    def find_tokenizer_path(base_dir):
+        for root, dirs, files in os.walk(base_dir):
+            if "tokenizer_config.json" in files:
+                return root
+        return None
+
+    # Check if model files exist
+    model_path = find_model_path(MODELS_DIR)
+    if not model_path:
+        raise Exception(f"Could not find model files in {MODELS_DIR}")
+
+    # Check if tokenizer files exist
+    tokenizer_path = find_tokenizer_path(MODELS_DIR)
+    if not tokenizer_path:
+        raise Exception(f"Could not find tokenizer files in {MODELS_DIR}")
+
+    print(f"Initializing AsyncLLMEngine with model path: {model_path} and tokenizer path: {tokenizer_path}")
+
+    # Create a FastAPI app
+    web_app = fastapi.FastAPI(
+        title=f"OpenAI-compatible {MODEL_NAME} server",
+        description="Run an OpenAI-compatible LLM server with vLLM on modal.com",
+        version="0.0.1",
+        docs_url="/docs",
+    )
+
+    # Create an `AsyncLLMEngine`, the core of the vLLM server.
+    engine_args = AsyncEngineArgs(
+        model=model_path,      # Use the found model path
+        tokenizer=tokenizer_path,  # Use the found tokenizer path
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.90,
+    )
+    engine = AsyncLLMEngine.from_engine_args(engine_args)
+
+    # Get model config using the robust event loop handling
+    event_loop: Optional[asyncio.AbstractEventLoop]
+    try:
+        event_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        event_loop = None
+
+    if event_loop is not None and event_loop.is_running():
+        model_config = event_loop.run_until_complete(engine.get_model_config())
+    else:
+        model_config = asyncio.run(engine.get_model_config())
+
+    # Initialize OpenAIServingChat
+    request_logger = RequestLogger(max_log_len=256)  # Adjust max_log_len as needed
+    openai_serving_chat = OpenAIServingChat(
+        engine,
+        model_config,
+        [MODEL_NAME],  # served_model_names
+        "assistant",   # response_role
+        lora_modules=None,  # Adjust if you're using LoRA
+        prompt_adapters=None,  # Adjust if you're using prompt adapters
+        request_logger=request_logger,
+        chat_template=None,  # Adjust if you have a specific chat template
+    )
+
+    @web_app.get("/v1/completions")
+    async def get_completions(prompt: str, max_tokens: int = 6000, stream: bool = False):
+        request_id = str(uuid.uuid4())
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=0.7,
+            top_p=0.95,
+            repetition_penalty=1.5,  # Encourage the model to use new tokens
+            stop=["User:", "\n\n"]
+        )
+
+        async def completion_generator() -> AsyncGenerator[str, None]:
+            try:
+                full_response = ""
+                assistant_prefix_removed = False
+                last_yielded_position = 0
+                async for result in engine.generate(prompt, sampling_params, request_id):
+                    if len(result.outputs) > 0:
+                        new_text = result.outputs[0].text
+                        if not assistant_prefix_removed:
+                            new_text = new_text.split("Assistant:")[-1].lstrip()
+                            assistant_prefix_removed = True
+
+                        if len(new_text) > last_yielded_position:
+                            new_part = new_text[last_yielded_position:]
+                            yield new_part
+                            last_yielded_position = len(new_text)
+
+                        full_response = new_text
+            except Exception as e:
+                yield str(e)
+
+        if stream:
+            return StreamingResponse(
+                completion_generator(), media_type="text/event-stream"
+            )
+        else:
+            completion = ""
+            async for chunk in completion_generator():
+                completion += chunk
+            return JSONResponse(content={"choices": [{"text": completion.strip()}]})
+
+    return web_app
 
 # FastHTML web interface implementation with RAG
 @app.function(
@@ -192,19 +312,29 @@ def serve_fasthtml():
     Session = sessionmaker(bind=engine)
     sqlalchemy_session = Session()
 
-    # Update the load_chat_history function
     async def load_chat_history(session_id):
         """Load chat history for a session from the database"""
+        if not isinstance(session_id, str):
+            logging.warning(f"Invalid session_id type: {type(session_id)}. Converting to string.")
+            session_id = str(session_id)
+        
         if session_id not in session_messages:
-            # Query the database for this session's messages using SQLAlchemy
-            session_history = sqlalchemy_session.query(Conversation).filter_by(session_id=session_id).order_by(Conversation.created_at).all()
-            
-            # Initialize the session's message list
-            session_messages[session_id] = [
-                {"role": msg.role, "content": msg.content}
-                for msg in session_history
-            ]
-
+            try:
+                # Query the database for this session's messages using SQLAlchemy
+                session_history = sqlalchemy_session.query(Conversation)\
+                    .filter(Conversation.session_id == session_id)\
+                    .order_by(Conversation.created_at)\
+                    .all()
+                
+                # Initialize the session's message list
+                session_messages[session_id] = [
+                    {"role": msg.role, "content": msg.content}
+                    for msg in session_history
+                ]
+            except Exception as e:
+                logging.error(f"Database error in load_chat_history: {e}")
+                session_messages[session_id] = []  # Initialize empty if error occurs
+        
         return session_messages[session_id]
 
     @rt("/")
@@ -221,7 +351,9 @@ def serve_fasthtml():
                 "Chat with Agony Aunt",
                 cls="text-3xl font-bold mb-4 text-white"
             ),
-            chat(session_id=session_id, messages=messages),  # Pass messages to chat component
+            # Add session ID display that matches the stored session ID
+            Div(f"Session ID: {session_id}", cls="text-white mb-4"),
+            chat(session_id=session_id, messages=messages),
             # Model status indicator
             Div(
                 Span("Model status: "),
@@ -273,14 +405,13 @@ def serve_fasthtml():
         )
 
     @fasthtml_app.ws("/ws")
-    async def ws(msg: str, session, send):
-        if session is None:
-            session = {}
-
-        if 'session_id' not in session:
-            session['session_id'] = str(uuid.uuid4())
-        session_id = session['session_id']
-
+    async def ws(msg: str, session_id: str, send):
+        logging.info(f"WebSocket received - msg: {msg}, session_id: {session_id}")
+        
+        if not session_id:
+            logging.error("No session_id received in WebSocket connection!")
+            return
+        # Use the session_id passed from the frontend
         messages = await load_chat_history(session_id)
 
         response_received = asyncio.Event()  # Event to indicate if response has been received
@@ -352,7 +483,8 @@ def serve_fasthtml():
         messages.append({"role": "user", "content": msg})
         message_index = len(messages) - 1
 
-        # Store in database
+        # First database write (user message)
+        logging.info(f"Writing user message to DB - Session ID: {session_id}")
         new_message = Conversation(
             message_id=str(uuid.uuid4()),
             session_id=session_id,
@@ -361,6 +493,7 @@ def serve_fasthtml():
         )
         sqlalchemy_session.add(new_message)
         sqlalchemy_session.commit()
+        logging.info(f"User message committed to DB successfully - Content: {msg[:50]}...")
 
         await send(chat_form(disabled=True))
         await send(
@@ -460,7 +593,8 @@ def serve_fasthtml():
                                 )
                             )
 
-                    # Store the assistant's response in the database
+                    # Second database write (assistant message)
+                    logging.info(f"Writing assistant message to DB - Session ID: {session_id}")
                     assistant_content = messages[message_index]["content"]
                     new_assistant_message = Conversation(
                         message_id=str(uuid.uuid4()),
@@ -470,6 +604,7 @@ def serve_fasthtml():
                     )
                     sqlalchemy_session.add(new_assistant_message)
                     sqlalchemy_session.commit()
+                    logging.info(f"Assistant message committed to DB successfully - Content: {assistant_content[:50]}...")
                 else:
                     # Handle error
                     error_message = "Error: Unable to get response from LLM."
