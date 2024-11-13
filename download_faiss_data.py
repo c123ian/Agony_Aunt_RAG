@@ -58,6 +58,8 @@ def download_and_store_data(force_download=False):
     faiss.normalize_L2(embeddings)
 
     # Create FAISS index and add embeddings
+    # Using IndexFlatIP (Inner Product) with normalized vectors, which means you're using cosine similarity.
+    # cosine similarity scores, ranging from -1 (completely dissimilar) to 1 (identical).
     index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
 

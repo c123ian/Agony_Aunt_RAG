@@ -25,8 +25,8 @@ def chat_button(disabled=False):
 
 # Update the chat_form component to include the session ID
 def chat_form(disabled=False, session_id=None):  # Add session_id parameter
-    if not session_id:
-        logging.error("No session_id provided to chat_form!")
+    #if not session_id:
+    #    logging.error("No session_id provided to chat_form!")
         
     return Form(
         Input(
@@ -79,7 +79,6 @@ def chat(session_id, messages):
         logging.info(f"Rendering chat component with session_id: {session_id}"),
         chat_window(messages),
         chat_form(disabled=False, session_id=session_id),  # Pass session_id to form
-        # chat_form().replace("{{ session_id }}", session_id),  # Replace placeholder with actual session_id,
         Script(
             """
             function scrollToBottom(smooth) {
