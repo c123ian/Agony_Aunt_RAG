@@ -23,18 +23,21 @@ USERNAME = "c123ian"
 APP_NAME = "rag-chatbot"
 DATABASE_DIR = "/db_data"  # Database directory
 
-db_path = os.path.join(DATABASE_DIR, 'chat_history_test.db')
+db_path = os.path.join(DATABASE_DIR, 'chat_history.db')
 
 # Ensure the directory exists
 os.makedirs(DATABASE_DIR, exist_ok=True)
 
-# Step 1: Create the 'conversations' table if it does not exist
+# Create the 'conversations' table if it does not exist
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations (
-        message_id TEXT PRIMARY KEY,  # Unique ID for each message
-        session_id TEXT NOT NULL, # Session ID to group conversations
+    DROP TABLE IF EXISTS conversations
+''')
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conversations_history_table_sqlalchemy (
+        message_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -66,7 +69,8 @@ image = modal.Image.debian_slim(python_version="3.10").pip_install(
     "pandas",
     "numpy",
     "huggingface_hub",
-    "transformers"      # Added for the tokenizer
+    "transformers",
+    'sqlalchemy'     
 )
 
 # Define the FAISS volume
@@ -117,6 +121,11 @@ def serve_fasthtml():
     from starlette.websockets import WebSocket
     import uuid
     import asyncio
+    from sqlalchemy import create_engine, Column, String, DateTime
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.orm import sessionmaker
+    import datetime
+
 
     # Retrieve the secret key from environment variables
     SECRET_KEY = os.environ.get('YOUR_KEY')
@@ -166,19 +175,34 @@ def serve_fasthtml():
     # Add a dictionary to store session-specific messages
     session_messages = {}
 
+
+    # Define the SQLAlchemy base and model
+    Base = declarative_base()
+
+    class Conversation(Base):
+        __tablename__ = 'conversations_history_table_sqlalchemy'
+        message_id = Column(String, primary_key=True)
+        session_id = Column(String, nullable=False)
+        role = Column(String, nullable=False)
+        content = Column(String, nullable=False)
+        created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Create a SQLAlchemy engine and session
+    engine = create_engine(f'sqlite:///{db_path}')
+    Session = sessionmaker(bind=engine)
+    sqlalchemy_session = Session()
+
+    # Update the load_chat_history function
     async def load_chat_history(session_id):
         """Load chat history for a session from the database"""
         if session_id not in session_messages:
-            # Query the database for this session's messages using correct FastLite syntax
-            session_history = conversations.lookup({"session_id": session_id})
+            # Query the database for this session's messages using SQLAlchemy
+            session_history = sqlalchemy_session.query(Conversation).filter_by(session_id=session_id).order_by(Conversation.created_at).all()
             
-            # Sort the messages by created_at timestamp
-            sorted_history = sorted(session_history, key=lambda x: x["created_at"])
-
             # Initialize the session's message list
             session_messages[session_id] = [
-                {"role": msg["role"], "content": msg["content"]}
-                for msg in sorted_history
+                {"role": msg.role, "content": msg.content}
+                for msg in session_history
             ]
 
         return session_messages[session_id]
@@ -329,12 +353,14 @@ def serve_fasthtml():
         message_index = len(messages) - 1
 
         # Store in database
-        conversations.insert(
-            message_id=str(uuid.uuid4()),  # Generate unique ID for each message
+        new_message = Conversation(
+            message_id=str(uuid.uuid4()),
             session_id=session_id,
             role='user',
             content=msg
         )
+        sqlalchemy_session.add(new_message)
+        sqlalchemy_session.commit()
 
         await send(chat_form(disabled=True))
         await send(
@@ -436,12 +462,14 @@ def serve_fasthtml():
 
                     # Store the assistant's response in the database
                     assistant_content = messages[message_index]["content"]
-                    conversations.insert(
-                        message_id=str(uuid.uuid4()),  # Generate unique ID for each message
+                    new_assistant_message = Conversation(
+                        message_id=str(uuid.uuid4()),
                         session_id=session_id,
                         role='assistant',
                         content=assistant_content
                     )
+                    sqlalchemy_session.add(new_assistant_message)
+                    sqlalchemy_session.commit()
                 else:
                     # Handle error
                     error_message = "Error: Unable to get response from LLM."
