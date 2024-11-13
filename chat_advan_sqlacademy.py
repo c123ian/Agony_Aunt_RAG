@@ -364,8 +364,11 @@ def serve_fasthtml():
             cls="flex flex-col items-center min-h-screen bg-black",
         )
 
+
     # Placeholder implementation for arrow_circle_icon
-    # (Assuming arrow_circle_icon is imported correctly)
+    def arrow_circle_icon():
+        # Replace this with your actual arrow_circle_icon implementation
+        return Span("→")  # Placeholder
 
     def chat_top_sources(top_sources):
         return Div(
