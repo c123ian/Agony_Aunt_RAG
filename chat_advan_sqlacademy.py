@@ -365,11 +365,6 @@ def serve_fasthtml():
         )
 
 
-    # Placeholder implementation for arrow_circle_icon
-    def arrow_circle_icon():
-        # Replace this with your actual arrow_circle_icon implementation
-        return Span("→")  # Placeholder
-
     def chat_top_sources(top_sources):
         return Div(
             Div(
@@ -512,13 +507,13 @@ def serve_fasthtml():
         question_embedding = question_embedding.astype('float32')
 
         # Retrieve top K similar documents
-        K = 3
+        K = 2
         distances, indices = index.search(question_embedding, K)
         retrieved_docs = [docs[idx] for idx in indices[0]]
 
         # Extract 'data-headline' and 'URL' of the top documents
         top_sources = []
-        for idx in indices[0][:2]:  # Top 2 documents
+        for idx in indices[0][:2]:  # Top 2 documents too display on GUI
             data_headline = df.iloc[idx]['data-headline']
             url = df.iloc[idx]['URL']  # Ensure 'URL' is a column in your DataFrame
             top_sources.append({'data_headline': data_headline, 'url': url})
