@@ -554,22 +554,30 @@ def serve_fasthtml():
 
         conversation_history = build_conversation(messages)
 
+        # Define a prompt-building function
+        def build_prompt(system_prompt, context, conversation_history):
+            return f"""{system_prompt}
+
+        Context Information:
+        {context}
+
+        Conversation History:
+        {conversation_history}
+        Assistant:"""
+
         # System prompt
         system_prompt = (
             "You are an 'Agony Aunt' who helps individuals clarify their options and think through their choices. "
-            "Provide thoughtful, empathetic, and helpful responses based on the user's concerns or questions."
-            "Review provided context information for guidance. Do not mention conversation history directly. Avoid 'boyfriend/her' pronouns where possible."
-            "Elaborate in detail using context if needed."
+            "Provide thoughtful, empathetic, and helpful responses based on the user's concerns or questions. "
+            "Refer to the provided context for guidance. Do not mention conversation history directly."
         )
 
         # Limit context to the most relevant snippets
         context = "\n\n".join(retrieved_docs[0:2])  # Take TOP 2
 
-        # Build the prompt
-        prompt = (
-            f"{system_prompt}\n\nContext Information:\n{context}\n\n"
-            f"Conversation History:\n{conversation_history}\nAssistant:"
-        )
+
+        # Build the final prompt
+        prompt = build_prompt(system_prompt, context, conversation_history)
 
         # Log the final prompt for debugging purposes
         print(f"Final Prompt being passed to the LLM:\n{prompt}\n")
