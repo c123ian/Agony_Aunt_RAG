@@ -183,15 +183,20 @@ def serve_vllm():
         chat_template=None,  # Adjust if you have a specific chat template
     )
 
-    @web_app.get("/v1/completions")
-    async def get_completions(prompt: str, max_tokens: int = 6000, stream: bool = False):
+    @web_app.post("/v1/completions")
+    async def get_completions(request: Request):
+        data = await request.json()
+        prompt = data.get("prompt", "")
+        max_tokens = data.get("max_tokens", 6000)
+        stream = data.get("stream", False)
+
         request_id = str(uuid.uuid4())
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=0.7,
             top_p=0.95,
-            repetition_penalty=1.5,  # Encourage the model to use new tokens
-            stop=["User:", "\n\n"]
+            repetition_penalty=1.1,  # Adjusted from 1.5 to 1.1
+            stop=["User:", "Assistant:", "\n\n"]
         )
 
         async def completion_generator() -> AsyncGenerator[str, None]:
@@ -569,14 +574,21 @@ def serve_fasthtml():
         # Log the final prompt for debugging purposes
         print(f"Final Prompt being passed to the LLM:\n{prompt}\n")
 
-        # Send prompt to vLLM server using aiohttp
+        # Send prompt to vLLM server using aiohttp vis JSON payload (POST)
         vllm_url = f"https://{USERNAME}--{APP_NAME}-serve-vllm.modal.run/v1/completions"
-        params = {"prompt": prompt, "max_tokens": 2000, "stream": "true"}
+        payload = {
+            "prompt": prompt,
+            "max_tokens": 2000,
+            "stream": True  
+        }
 
-        # Add assistant's response to session-specific chat history
-        messages.append({"role": "assistant", "content": ""})
-        message_index = len(messages) - 1
-        await send(
+        async with aiohttp.ClientSession() as client_session:
+            async with client_session.post(vllm_url, json=payload) as response:
+
+                # Add assistant's response to session-specific chat history
+                messages.append({"role": "assistant", "content": ""})
+                message_index = len(messages) - 1
+                await send(
             Div(
                 chat_message(message_index, messages=messages),
                 id="messages",
@@ -585,22 +597,22 @@ def serve_fasthtml():
         )
 
         async with aiohttp.ClientSession() as client_session:
-            async with client_session.get(vllm_url, params=params) as response:
+            async with client_session.post(vllm_url, json=payload) as response:
                 if response.status == 200:
                     # Indicate that response has been received
                     response_received.set()
-
                     async for chunk in response.content.iter_chunked(1024):
                         if chunk:
-                            text = chunk.decode('utf-8')
-                            messages[message_index]["content"] += text
-                            await send(
-                                Span(
-                                    text,
-                                    id=f"msg-content-{message_index}",
-                                    hx_swap_oob="beforeend"
+                            text = chunk.decode('utf-8').strip()  # Strip whitespace
+                            if text:  # Only process non-empty text
+                                messages[message_index]["content"] += text
+                                await send(
+                                    Span(
+                                        text,
+                                        hx_swap_oob="beforeend",  # Changed from default to 'beforeend'
+                                        id=f"msg-content-{message_index}"
+                                    )
                                 )
-                            )
 
                     # Second database write (assistant message)
                     new_assistant_message = Conversation(
