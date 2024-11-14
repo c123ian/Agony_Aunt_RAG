@@ -28,18 +28,21 @@ db_path = os.path.join(DATABASE_DIR, 'chat_history.db')
 # Ensure the directory exists
 os.makedirs(DATABASE_DIR, exist_ok=True)
 
-# Create the 'conversations' table if it does not exist
+# Create the table if it does not exist
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 cursor.execute('''
-    DROP TABLE IF EXISTS conversations
+    DROP TABLE IF EXISTS conversations_history_table_sqlalchemy_v2
 ''')
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations_history_table_sqlalchemy (
+    CREATE TABLE IF NOT EXISTS conversations_history_table_sqlalchemy_v2 (
         message_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        top_source_headline TEXT,
+        top_source_url TEXT,
+        cosine_sim_score REAL, 
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
 ''')
@@ -241,7 +244,7 @@ def serve_fasthtml():
     from starlette.websockets import WebSocket
     import uuid
     import asyncio
-    from sqlalchemy import create_engine, Column, String, DateTime
+    from sqlalchemy import create_engine, Column, String, DateTime, Float  # Add Float to imports
     from sqlalchemy.ext.declarative import declarative_base
     from sqlalchemy.orm import sessionmaker
     import datetime
@@ -300,11 +303,14 @@ def serve_fasthtml():
     Base = declarative_base()
 
     class Conversation(Base):
-        __tablename__ = 'conversations_history_table_sqlalchemy'
+        __tablename__ = 'conversations_history_table_sqlalchemy_v2'
         message_id = Column(String, primary_key=True)
         session_id = Column(String, nullable=False)
         role = Column(String, nullable=False)
         content = Column(String, nullable=False)
+        top_source_headline = Column(String)
+        top_source_url = Column(String)
+        cosine_sim_score = Column(Float)  # Now using SQLAlchemy's Float
         created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Create a SQLAlchemy engine and session
@@ -511,12 +517,17 @@ def serve_fasthtml():
         distances, indices = index.search(question_embedding, K)
         retrieved_docs = [docs[idx] for idx in indices[0]]
 
-        # Extract 'data-headline' and 'URL' of the top documents
+        # Get top sources with scores
         top_sources = []
-        for idx in indices[0][:2]:  # Top 2 documents too display on GUI
+        for i, idx in enumerate(indices[0][:K]):
             data_headline = df.iloc[idx]['data-headline']
-            url = df.iloc[idx]['URL']  # Ensure 'URL' is a column in your DataFrame
-            top_sources.append({'data_headline': data_headline, 'url': url})
+            url = df.iloc[idx]['URL']
+            similarity_score = float(1 - distances[0][i])  # Convert distance to similarity
+            top_sources.append({
+                'data_headline': data_headline,  
+                'url': url,
+                'similarity_score': similarity_score
+            })
 
         # Construct context from retrieved documents
         context = "\n\n".join(retrieved_docs)
@@ -592,17 +603,18 @@ def serve_fasthtml():
                             )
 
                     # Second database write (assistant message)
-                    logging.info(f"Writing assistant message to DB - Session ID: {session_id}")
-                    assistant_content = messages[message_index]["content"]
                     new_assistant_message = Conversation(
                         message_id=str(uuid.uuid4()),
                         session_id=session_id,
                         role='assistant',
-                        content=assistant_content
+                        content=messages[message_index]["content"],  # Use the assistant's response
+                        top_source_headline=top_sources[0]['data_headline'],  # Store top result
+                        top_source_url=top_sources[0]['url'],
+                        cosine_sim_score=top_sources[0]['similarity_score']
                     )
                     sqlalchemy_session.add(new_assistant_message)
                     sqlalchemy_session.commit()
-                    logging.info(f"Assistant message committed to DB successfully - Content: {assistant_content[:50]}...")
+                    logging.info(f"Assistant message committed to DB successfully - Content: {msg[:50]}...")
                 else:
                     # Handle error
                     error_message = "Error: Unable to get response from LLM."
