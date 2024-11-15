@@ -28,18 +28,21 @@ db_path = os.path.join(DATABASE_DIR, 'chat_history.db')
 # Ensure the directory exists
 os.makedirs(DATABASE_DIR, exist_ok=True)
 
-# Create the 'conversations' table if it does not exist
+# Create the table if it does not exist
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 cursor.execute('''
-    DROP TABLE IF EXISTS conversations
+    DROP TABLE IF EXISTS conversations_history_table_sqlalchemy_v2
 ''')
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations_history_table_sqlalchemy (
+    CREATE TABLE IF NOT EXISTS conversations_history_table_sqlalchemy_v2 (
         message_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        top_source_headline TEXT,
+        top_source_url TEXT,
+        cosine_sim_score REAL, 
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
 ''')
@@ -180,15 +183,20 @@ def serve_vllm():
         chat_template=None,  # Adjust if you have a specific chat template
     )
 
-    @web_app.get("/v1/completions")
-    async def get_completions(prompt: str, max_tokens: int = 6000, stream: bool = False):
+    @web_app.post("/v1/completions")
+    async def get_completions(request: Request):
+        data = await request.json()
+        prompt = data.get("prompt", "")
+        max_tokens = data.get("max_tokens", 6000)
+        stream = data.get("stream", False)
+
         request_id = str(uuid.uuid4())
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=0.7,
             top_p=0.95,
-            repetition_penalty=1.5,  # Encourage the model to use new tokens
-            stop=["User:", "\n\n"]
+            repetition_penalty=1.1,  # Adjusted from 1.5 to 1.1
+            stop=["User:", "Assistant:", "\n\n"],
         )
 
         async def completion_generator() -> AsyncGenerator[str, None]:
@@ -241,7 +249,7 @@ def serve_fasthtml():
     from starlette.websockets import WebSocket
     import uuid
     import asyncio
-    from sqlalchemy import create_engine, Column, String, DateTime
+    from sqlalchemy import create_engine, Column, String, DateTime, Float  # Add Float to imports
     from sqlalchemy.ext.declarative import declarative_base
     from sqlalchemy.orm import sessionmaker
     import datetime
@@ -300,11 +308,14 @@ def serve_fasthtml():
     Base = declarative_base()
 
     class Conversation(Base):
-        __tablename__ = 'conversations_history_table_sqlalchemy'
+        __tablename__ = 'conversations_history_table_sqlalchemy_v2'
         message_id = Column(String, primary_key=True)
         session_id = Column(String, nullable=False)
         role = Column(String, nullable=False)
         content = Column(String, nullable=False)
+        top_source_headline = Column(String)
+        top_source_url = Column(String)
+        cosine_sim_score = Column(Float)  # Now using SQLAlchemy's Float
         created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Create a SQLAlchemy engine and session
@@ -511,12 +522,17 @@ def serve_fasthtml():
         distances, indices = index.search(question_embedding, K)
         retrieved_docs = [docs[idx] for idx in indices[0]]
 
-        # Extract 'data-headline' and 'URL' of the top documents
+        # Get top sources with scores
         top_sources = []
-        for idx in indices[0][:2]:  # Top 2 documents too display on GUI
+        for i, idx in enumerate(indices[0][:K]):
             data_headline = df.iloc[idx]['data-headline']
-            url = df.iloc[idx]['URL']  # Ensure 'URL' is a column in your DataFrame
-            top_sources.append({'data_headline': data_headline, 'url': url})
+            url = df.iloc[idx]['URL']
+            similarity_score = float(1 - distances[0][i])  # Convert distance to similarity
+            top_sources.append({
+                'data_headline': data_headline,  
+                'url': url,
+                'similarity_score': similarity_score
+            })
 
         # Construct context from retrieved documents
         context = "\n\n".join(retrieved_docs)
@@ -538,34 +554,49 @@ def serve_fasthtml():
 
         conversation_history = build_conversation(messages)
 
+        # Define a prompt-building function
+        def build_prompt(system_prompt, context, conversation_history):
+            return f"""{system_prompt}
+
+        Context Information:
+        {context}
+
+        Conversation History:
+        {conversation_history}
+        Assistant:"""
+
         # System prompt
         system_prompt = (
             "You are an 'Agony Aunt' who helps individuals clarify their options and think through their choices. "
-            "Provide thoughtful, empathetic, and helpful responses based on the user's concerns or questions."
-            "Review provided context information for guidance. Do not mention conversation history directly. Avoid 'boyfriend/her' pronouns where possible."
-            "Elaborate in detail using context if needed."
+            "Provide thoughtful, empathetic, and helpful responses based on the user's concerns or questions. "
+            "Refer to the provided context for guidance. Do not mention conversation history directly."
         )
 
         # Limit context to the most relevant snippets
         context = "\n\n".join(retrieved_docs[0:2])  # Take TOP 2
 
-        # Build the prompt
-        prompt = (
-            f"{system_prompt}\n\nContext Information:\n{context}\n\n"
-            f"Conversation History:\n{conversation_history}\nAssistant:"
-        )
+
+        # Build the final prompt
+        prompt = build_prompt(system_prompt, context, conversation_history)
 
         # Log the final prompt for debugging purposes
         print(f"Final Prompt being passed to the LLM:\n{prompt}\n")
 
-        # Send prompt to vLLM server using aiohttp
+        # Send prompt to vLLM server using aiohttp vis JSON payload (POST)
         vllm_url = f"https://{USERNAME}--{APP_NAME}-serve-vllm.modal.run/v1/completions"
-        params = {"prompt": prompt, "max_tokens": 2000, "stream": "true"}
+        payload = {
+            "prompt": prompt,
+            "max_tokens": 2000,
+            "stream": True  
+        }
 
-        # Add assistant's response to session-specific chat history
-        messages.append({"role": "assistant", "content": ""})
-        message_index = len(messages) - 1
-        await send(
+        async with aiohttp.ClientSession() as client_session:
+            async with client_session.post(vllm_url, json=payload) as response:
+
+                # Add assistant's response to session-specific chat history
+                messages.append({"role": "assistant", "content": ""})
+                message_index = len(messages) - 1
+                await send(
             Div(
                 chat_message(message_index, messages=messages),
                 id="messages",
@@ -574,35 +605,39 @@ def serve_fasthtml():
         )
 
         async with aiohttp.ClientSession() as client_session:
-            async with client_session.get(vllm_url, params=params) as response:
+            async with client_session.post(vllm_url, json=payload) as response:
                 if response.status == 200:
                     # Indicate that response has been received
                     response_received.set()
-
                     async for chunk in response.content.iter_chunked(1024):
                         if chunk:
-                            text = chunk.decode('utf-8')
-                            messages[message_index]["content"] += text
-                            await send(
-                                Span(
-                                    text,
-                                    id=f"msg-content-{message_index}",
-                                    hx_swap_oob="beforeend"
+                            text = chunk.decode('utf-8').strip()
+                            if text:
+                                # Add space handling
+                                if not text.startswith(' ') and messages[message_index]["content"] and not messages[message_index]["content"].endswith(' '):
+                                    text = ' ' + text
+                                messages[message_index]["content"] += text
+                                await send(
+                                    Span(
+                                        text,
+                                        hx_swap_oob="beforeend",  # Changed from default to 'beforeend'
+                                        id=f"msg-content-{message_index}"
+                                    )
                                 )
-                            )
 
                     # Second database write (assistant message)
-                    logging.info(f"Writing assistant message to DB - Session ID: {session_id}")
-                    assistant_content = messages[message_index]["content"]
                     new_assistant_message = Conversation(
                         message_id=str(uuid.uuid4()),
                         session_id=session_id,
                         role='assistant',
-                        content=assistant_content
+                        content=messages[message_index]["content"],  # Use the assistant's response
+                        top_source_headline=top_sources[0]['data_headline'],  # Store top result
+                        top_source_url=top_sources[0]['url'],
+                        cosine_sim_score=top_sources[0]['similarity_score']
                     )
                     sqlalchemy_session.add(new_assistant_message)
                     sqlalchemy_session.commit()
-                    logging.info(f"Assistant message committed to DB successfully - Content: {assistant_content[:50]}...")
+                    logging.info(f"Assistant message committed to DB successfully - Content: {msg[:50]}...")
                 else:
                     # Handle error
                     error_message = "Error: Unable to get response from LLM."
