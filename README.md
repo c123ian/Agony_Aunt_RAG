@@ -1,5 +1,5 @@
 ## Agony Aunt App
-- This LLM and RAG app was built using Modal Labs, vLLM and FastHTML!
+- This LLM and RAG app was built using Modal Labs, vLLM and FastHTML.
 - Try it out yourself with my demo [here](https://c123ian--rag-chatbot-serve-fasthtml.modal.run)
 - Blog post for more details [here](https://c123ian.github.io/posts/aa_Agony-aunt/agony_aunt_blog_post.html)
 
